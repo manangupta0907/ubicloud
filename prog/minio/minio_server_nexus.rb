@@ -109,7 +109,27 @@ class Prog::Minio::MinioServerNexus < Prog::Base
   end
 
   label def wait_setup
-    reap(:wait)
+    reap(:pin_net_threads)
+  end
+
+  label def pin_net_threads
+    # Ship the current rhizome to the host only when it is stale, so the pin
+    # bin is present without re-shipping it on every re-pin.
+    if RhizomeInstallation[vm.vm_host_id]&.commit == Config.git_commit_hash
+      hop_apply_net_thread_pin
+    end
+
+    bud Prog::InstallRhizome, {"subject_id" => vm.vm_host_id, "target_folder" => "host"}
+    hop_wait_pin_net_threads
+  end
+
+  label def wait_pin_net_threads
+    reap(:apply_net_thread_pin)
+  end
+
+  label def apply_net_thread_pin
+    vm.vm_host.sshable.cmd("sudo host/bin/pin-vm-net-threads install :vm_name :exclude_cpus", vm_name: vm.inhost_name, exclude_cpus: net_pin_exclude_cpus)
+    hop_wait
   end
 
   label def wait
@@ -138,6 +158,11 @@ class Prog::Minio::MinioServerNexus < Prog::Base
       end
 
       push self.class, {}, "minio_restart"
+    end
+
+    when_pin_net_threads_set? do
+      decr_pin_net_threads
+      hop_pin_net_threads
     end
 
     refresh_after = cluster.uses_publicly_signed_certificates? ? 60 * 60 * 24 * 7 : 60 * 60 * 24 * 30
@@ -271,6 +296,12 @@ class Prog::Minio::MinioServerNexus < Prog::Base
   def wait_for_public_cert(frame_key)
     wait_public_cert(send(frame_key))
     delete_from_stack(frame_key)
+  end
+
+  # Slice cpusets never include the host IO cpus, so this only narrows the
+  # pin on non-slice hosts.
+  def net_pin_exclude_cpus
+    vm.vm_host.cpus_dataset.where(io: true).order(:cpu_number).select_map(:cpu_number).join(",")
   end
 
   def create_certificate

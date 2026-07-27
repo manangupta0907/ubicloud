@@ -266,8 +266,60 @@ RSpec.describe Prog::Minio::MinioServerNexus do
       expect { nx.wait_setup }.to nap(120)
     end
 
-    it "hops to wait if setup is done" do
-      expect { nx.wait_setup }.to hop("wait")
+    it "hops to pin_net_threads if setup is done" do
+      expect { nx.wait_setup }.to hop("pin_net_threads")
+    end
+  end
+
+  describe "net thread pinning" do
+    let(:vm_host) { create_vm_host }
+
+    before do
+      nx.minio_server.vm.update(vm_host_id: vm_host.id)
+    end
+
+    describe "#pin_net_threads" do
+      before do
+        allow(Config).to receive(:git_commit_hash).and_return("abc123")
+      end
+
+      it "hops to apply_net_thread_pin when the host rhizome is current" do
+        RhizomeInstallation.create_with_id(vm_host.sshable, folder: "host", commit: "abc123", digest: "d")
+        expect { nx.pin_net_threads }.to hop("apply_net_thread_pin")
+        expect(nx.strand.children).to be_empty
+      end
+
+      it "buds InstallRhizome and waits when the host has no current rhizome" do
+        expect { nx.pin_net_threads }.to hop("wait_pin_net_threads")
+        child = nx.strand.children.first
+        expect(child.prog).to eq "InstallRhizome"
+        expect(child.stack[0]["target_folder"]).to eq "host"
+        expect(child.stack[0]["subject_id"]).to eq vm_host.id
+      end
+    end
+
+    describe "#wait_pin_net_threads" do
+      it "hops to apply_net_thread_pin once the rhizome install is done" do
+        expect { nx.wait_pin_net_threads }.to hop("apply_net_thread_pin")
+      end
+    end
+
+    describe "#apply_net_thread_pin" do
+      it "installs the pin on the host and hops to wait" do
+        VmHostCpu.create(vm_host_id: vm_host.id, cpu_number: 0, io: true)
+        vm = nx.minio_server.vm
+        expect(vm.vm_host.sshable).to receive(:_cmd).with("sudo host/bin/pin-vm-net-threads install #{vm.inhost_name} 0")
+        expect { nx.apply_net_thread_pin }.to hop("wait")
+      end
+    end
+
+    describe "#net_pin_exclude_cpus" do
+      it "excludes the host IO cpus" do
+        VmHostCpu.create(vm_host_id: vm_host.id, cpu_number: 2, io: false)
+        VmHostCpu.create(vm_host_id: vm_host.id, cpu_number: 1, io: true)
+        VmHostCpu.create(vm_host_id: vm_host.id, cpu_number: 0, io: true)
+        expect(nx.net_pin_exclude_cpus).to eq("0,1")
+      end
     end
   end
 
@@ -331,6 +383,12 @@ RSpec.describe Prog::Minio::MinioServerNexus do
       expect(nx).to receive(:decr_initial_provisioning)
       expect(nx).to receive(:push).with(described_class, {}, "minio_restart").and_call_original
       expect { nx.wait }.to hop("minio_restart")
+    end
+
+    it "hops to pin_net_threads if pin_net_threads is set" do
+      nx.incr_pin_net_threads
+      expect { nx.wait }.to hop("pin_net_threads")
+      expect(Semaphore.where(strand_id: nx.minio_server.id, name: "pin_net_threads").count).to eq(0)
     end
 
     it "hops to refresh_certificates if certificate is checked more than a month ago" do

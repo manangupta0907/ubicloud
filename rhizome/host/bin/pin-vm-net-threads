@@ -1,0 +1,12 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../lib/vm_net_pinner"
+
+action, vm_name, exclude_cpus = ARGV
+unless ["pin", "install"].include?(action) && vm_name
+  warn "usage: pin-vm-net-threads {pin|install} <vm_name> [exclude_cpus]"
+  exit 1
+end
+
+VmNetPinner.new(vm_name, exclude_cpus.to_s).public_send(action)
